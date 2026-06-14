@@ -123,26 +123,26 @@ jobs:
 
       - name: Build tag list
         id: taglist
+        env:
+          TAG_OVERRIDE: ${{ inputs.tag || '' }}
+          META_JSON: ${{ steps.meta.outputs.json }}
         run: |
           set -euo pipefail
-          if [ -n "${{ env.TAG_OVERRIDE }}" ]; then
+          if [ -n "$TAG_OVERRIDE" ]; then
             # Release-channel mode: only the override tag + sha, no semver,
             # no main. Lets `tag: release` produce a stable channel without
             # touching the version.
-            TAGS_JSON=$(jq -nc --arg t "${{ env.TAG_OVERRIDE }}" \
-              '{tags: [$t, ("sha-" + env.SHA_SHORT)]}')
             SHA_SHORT="${GITHUB_SHA::7}"
-            TAGS_JSON=$(jq -nc --arg t "${{ env.TAG_OVERRIDE }}" --arg s "$SHA_SHORT" \
-              '{tags: [$t, "sha-" + $s]}')
-            echo "tags=$TAGS_JSON" >> "$GITHUB_OUTPUT"
-            echo "::notice::Release-channel build — only ${{ env.TAG_OVERRIDE }} + sha tagged"
+            TAGS_JSON=$(jq -nc --arg t "$TAG_OVERRIDE" --arg s "$SHA_SHORT" \
+              '{tags: [$t, ("sha-" + $s)]}')
           else
-            TAGS_JSON='{"tags":[]}'
-            while IFS= read -r tag; do
-              [ -n "$tag" ] && TAGS_JSON=$(jq --arg t "$tag" '.tags += [$t]' <<< "$TAGS_JSON")
-            done <<< "${{ steps.meta.outputs.tags }}"
-            echo "tags=$TAGS_JSON" >> "$GITHUB_OUTPUT"
+            # Strip the "${{ env.IMAGE }}:" prefix from each tag the
+            # metadata-action produced. imagetools wants bare tag names
+            # for `-t`, not fully-qualified refs.
+            TAGS_JSON=$(jq -c '{tags: [.tag-names[]]}' <<< "$META_JSON")
           fi
+          echo "tags=$TAGS_JSON" >> "$GITHUB_OUTPUT"
+          echo "::notice::tags: $(jq -c . <<< "$TAGS_JSON")"
 
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
