@@ -139,11 +139,13 @@ jobs:
             echo "::notice::tags: $(cat /tmp/tags.json)"
           else
             # DOCKER_METADATA_OUTPUT_TAG_NAMES is multiline (one bare
-            # tag-name per line). Build {tags: [...]} JSON.
+            # tag-name per line). Build {tags: [...]} JSON. -c keeps
+            # the output on a single line so GITHUB_OUTPUT can parse
+            # it as one value (multi-line values need the heredoc
+            # delimiter form, which is overkill for a tiny JSON blob).
             printf '%s' "${DOCKER_METADATA_OUTPUT_TAG_NAMES:-}" \
-              | jq -R -s 'split("\n") | map(select(. != "")) | {tags: .}' \
+              | jq -Rsc 'split("\n") | map(select(. != "")) | {tags: .}' \
               > /tmp/tags.json
-            cp /tmp/tags.json "$GITHUB_OUTPUT"
             echo "::notice::tags: $(cat /tmp/tags.json)"
           fi
           # Prepend the key name to the GITHUB_OUTPUT file. The runner
