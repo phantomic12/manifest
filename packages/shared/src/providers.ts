@@ -108,16 +108,9 @@ export const SHARED_PROVIDERS: readonly SharedProviderEntry[] = [
     id: 'groq',
     displayName: 'Groq',
     aliases: [],
-    // Groq has its own native /models endpoint, so we never want to attribute
-    // Groq models from the OpenRouter pricing cache here. Mapping OR's
-    // `groq/*` prefix to this entry would surface models the user can't
-    // actually call (e.g. compound-*) and render them with the OpenRouter
-    // logo. Pricing for the native Groq catalog comes from
-    // known-model-prices.ts as a last-resort fallback.
     openRouterPrefixes: [],
     requiresApiKey: true,
     localOnly: false,
-    // Brand orange from groq.com/favicon.svg
     color: '#F43E01',
     keyPrefix: 'gsk_',
     minKeyLength: 50,
@@ -127,9 +120,6 @@ export const SHARED_PROVIDERS: readonly SharedProviderEntry[] = [
     id: 'gitlawb',
     displayName: 'gitlawb',
     aliases: ['opengateway', 'gl'],
-    // No OpenRouter prefix mapping — the gateway aggregates other providers
-    // and OpenRouter's catalog would either double-count or mis-attribute
-    // gitlawb-hosted models to their upstream vendor.
     openRouterPrefixes: [],
     requiresApiKey: true,
     localOnly: false,
@@ -357,6 +347,18 @@ export const SHARED_PROVIDERS: readonly SharedProviderEntry[] = [
     keyPlaceholder: 'sk-or-...',
   },
   {
+    id: 'tokenrouter',
+    displayName: 'TokenRouter',
+    aliases: [],
+    openRouterPrefixes: [],
+    requiresApiKey: true,
+    localOnly: false,
+    color: '#6E56CF',
+    keyPrefix: '',
+    minKeyLength: 20,
+    keyPlaceholder: 'TokenRouter API key',
+  },
+  {
     id: 'xai',
     displayName: 'xAI',
     aliases: [],
@@ -416,7 +418,7 @@ export const normalizeProviderName = (s: string): string =>
   s
     .toLowerCase()
     .trim()
-    .replace(/[\s._\-]+/g, '');
+    .replace(/[\\s._\\-]+/g, '');
 
 /**
  * Setup hints for local-LLM provider tiles: default port, setup command,

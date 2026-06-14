@@ -113,6 +113,7 @@ const KILO_GATEWAY_BASE = 'https://api.kilo.ai/api/gateway';
 const NVIDIA_NIM_BASE = 'https://integrate.api.nvidia.com';
 const FIREWORKS_INFERENCE_BASE = 'https://api.fireworks.ai/inference';
 const GITLAWB_GATEWAY_BASE = 'https://opengateway.gitlawb.com';
+const TOKENROUTER_BASE = 'https://api.tokenrouter.com';
 const chatgptSubscriptionHeaders = (apiKey: string) => ({
   Authorization: `Bearer ${apiKey}`,
   'Content-Type': 'application/json',
@@ -307,9 +308,6 @@ export const PROVIDER_ENDPOINTS: Record<string, ProviderEndpoint> = {
   },
   google: {
     baseUrl: 'https://generativelanguage.googleapis.com',
-    // Google accepts the API key via the `x-goog-api-key` header as well as
-    // the `?key=` query parameter. Header is preferable: query strings show
-    // up in upstream proxy / load-balancer access logs, header values do not.
     buildHeaders: (apiKey: string) => ({
       'Content-Type': 'application/json',
       'x-goog-api-key': apiKey,
@@ -317,12 +315,6 @@ export const PROVIDER_ENDPOINTS: Record<string, ProviderEndpoint> = {
     buildPath: (model: string) => `/v1beta/models/${model}:generateContent`,
     format: 'google',
   },
-  // Gemini OAuth (gemini-cli flow) routes through the CodeAssist API, which
-  // wraps the standard Gemini request/response in a small envelope and
-  // identifies the user via a Bearer token + their assigned
-  // `cloudaicompanionProject` id (stored in the OAuth blob's `u` field).
-  // Wrap/unwrap happens in `provider-client` and `proxy-response-handler`
-  // when `endpointKey === 'gemini-subscription'`.
   'gemini-subscription': {
     baseUrl: 'https://cloudcode-pa.googleapis.com',
     buildHeaders: (apiKey: string) => ({
@@ -347,8 +339,6 @@ export const PROVIDER_ENDPOINTS: Record<string, ProviderEndpoint> = {
     format: 'openai',
     ...openaiStreamUsage,
   },
-  // Codex variants (e.g. gpt-5-codex, gpt-5.2-codex, gpt-5.3-codex) only accept
-  // /responses on Copilot — /chat/completions returns "Unsupported API for model".
   'copilot-responses': {
     baseUrl: 'https://api.githubcopilot.com',
     buildHeaders: (apiKey: string) => ({
@@ -406,17 +396,6 @@ export const PROVIDER_ENDPOINTS: Record<string, ProviderEndpoint> = {
     buildPath: () => '/v1/messages',
     format: 'anthropic',
   },
-  // OpenCode Zen's /v1/chat/completions is a unified OpenAI-compatible
-  // endpoint that handles Claude, GPT, and the long tail of OpenAI-compatible
-  // models (Qwen, GLM, Kimi, MiniMax, …) on a single Bearer-auth route.
-  //
-  // Gemini models on Zen are currently broken upstream — Zen forwards our
-  // `Authorization: Bearer` header to Vertex AI verbatim, which rejects the
-  // request with OVERLOADED_CREDENTIALS because Zen also attaches its own
-  // GCP credentials. This is a Zen-side gateway bug; switching to `x-api-key`
-  // only makes Zen reject with "Missing API key" before the request even
-  // reaches GCP. There is no client-side workaround until Zen stops
-  // tunneling our auth header through.
   'opencode-zen': {
     baseUrl: OPENCODE_ZEN_BASE,
     buildHeaders: openaiHeaders,
@@ -424,11 +403,6 @@ export const PROVIDER_ENDPOINTS: Record<string, ProviderEndpoint> = {
     format: 'openai',
     ...openaiStreamUsage,
   },
-  // TODO(opencode-zen): collapse this back into the single `opencode-zen`
-  // entry once Zen's gateway stops tunneling the client Authorization header
-  // through to Vertex AI on /v1/chat/completions. The unified path already
-  // works for Claude, GPT, and the OpenAI-compatible long tail; Gemini is
-  // the only family that still needs the Google-native combo today.
   'opencode-zen-google': {
     baseUrl: OPENCODE_ZEN_BASE,
     buildHeaders: (apiKey: string) => ({
@@ -438,13 +412,15 @@ export const PROVIDER_ENDPOINTS: Record<string, ProviderEndpoint> = {
     buildPath: (model: string) => `/v1/models/${model}:generateContent`,
     format: 'google',
   },
-  // gitlawb Opengateway — OpenAI-compatible aggregator that routes to
-  // Xiaomi, Google, MiniMax, Qwen, and others. Same shape as Kilo:
-  // users send `gitlawb/<vendor>/<model>` (or the gateway's own short
-  // aliases like `mimo-v2.5-pro`), the proxy strips the `gitlawb/`
-  // prefix and forwards the rest to the gateway.
   gitlawb: {
     baseUrl: GITLAWB_GATEWAY_BASE,
+    buildHeaders: openaiHeaders,
+    buildPath: openaiPath,
+    format: 'openai',
+    ...openaiStreamUsage,
+  },
+  tokenrouter: {
+    baseUrl: TOKENROUTER_BASE,
     buildHeaders: openaiHeaders,
     buildPath: openaiPath,
     format: 'openai',
@@ -457,7 +433,6 @@ export function buildCustomEndpoint(
   baseUrl: string,
   apiKind: 'openai' | 'anthropic' = 'openai',
 ): ProviderEndpoint {
-  // Strip trailing /v1 (or /v1/) since both buildPath callbacks include /v1.
   const normalized = normalizeProviderBaseUrl(baseUrl);
   if (apiKind === 'anthropic') {
     return {
@@ -486,9 +461,6 @@ export function buildEndpointOverride(baseUrl: string, templateKey: string): Pro
   return {
     ...template,
     baseUrl: normalizeProviderBaseUrl(baseUrl),
-    // The base URL came from a user-supplied source (Qwen region selector,
-    // MiniMax OAuth resource URL). Treat it as an SSRF candidate and
-    // re-validate before each forward.
     requiresSsrfRevalidation: true,
   };
 }
@@ -498,10 +470,8 @@ export function resolveEndpointKey(provider: string): string | null {
   const lower = provider.toLowerCase();
   if (PROVIDER_ENDPOINTS[lower]) return lower;
 
-  // Custom providers use their own dynamic endpoint
   if (lower.startsWith('custom:')) return lower;
 
-  // Look up via SST alias map — check id and all aliases against endpoints
   const entry = PROVIDER_BY_ID_OR_ALIAS.get(lower);
   if (entry) {
     if (PROVIDER_ENDPOINTS[entry.id]) return entry.id;
