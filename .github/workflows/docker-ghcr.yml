@@ -125,7 +125,9 @@ jobs:
         id: taglist
         env:
           TAG_OVERRIDE: ${{ inputs.tag || '' }}
-          META_JSON: ${{ steps.meta.outputs.json }}
+          # The docker/metadata-action exports DOCKER_METADATA_OUTPUT_TAG_NAMES
+          # as a process env var (multiline, one bare tag-name per line).
+          # We just read it directly in bash — no ${{ }} round-trip needed.
         run: |
           set -euo pipefail
           if [ -n "$TAG_OVERRIDE" ]; then
@@ -136,10 +138,8 @@ jobs:
             TAGS_JSON=$(jq -nc --arg t "$TAG_OVERRIDE" --arg s "$SHA_SHORT" \
               '{tags: [$t, ("sha-" + $s)]}')
           else
-            # Strip the "${{ env.IMAGE }}:" prefix from each tag the
-            # metadata-action produced. imagetools wants bare tag names
-            # for `-t`, not fully-qualified refs.
-            TAGS_JSON=$(jq -c '{tags: [.tag-names[]]}' <<< "$META_JSON")
+            TAGS_JSON=$(printf '%s' "${DOCKER_METADATA_OUTPUT_TAG_NAMES:-}" \
+              | jq -R -s 'split("\n") | map(select(. != "")) | {tags: .}')
           fi
           echo "tags=$TAGS_JSON" >> "$GITHUB_OUTPUT"
           echo "::notice::tags: $(jq -c . <<< "$TAGS_JSON")"
