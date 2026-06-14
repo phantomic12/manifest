@@ -132,22 +132,18 @@ jobs:
             # no main. Lets `tag: release` produce a stable channel without
             # touching the version.
             SHA_SHORT="${GITHUB_SHA::7}"
-            jq -nc --arg t "$TAG_OVERRIDE" --arg s "$SHA_SHORT" \
-              '{tags: [$t, ("sha-" + $s)]}' > "$GITHUB_OUTPUT"
-            jq -nc --arg t "$TAG_OVERRIDE" --arg s "$SHA_SHORT" \
-              '{tags: [$t, ("sha-" + $s)]}' > /tmp/tags.json
-            echo "::notice::tags: $(cat /tmp/tags.json)"
+            # Emit fully-qualified refs (`$IMAGE:tag`) so `docker buildx
+            # imagetools create` doesn't default to docker.io.
+            jq -nc --arg image "${IMAGE}" --arg t "$TAG_OVERRIDE" --arg s "$SHA_SHORT" \
+              '{tags: [($image + ":" + $t), ($image + ":sha-" + $s)]}' > /tmp/tags.json
           else
-            # DOCKER_METADATA_OUTPUT_TAG_NAMES is multiline (one bare
-            # tag-name per line). Build {tags: [...]} JSON. -c keeps
-            # the output on a single line so GITHUB_OUTPUT can parse
-            # it as one value (multi-line values need the heredoc
-            # delimiter form, which is overkill for a tiny JSON blob).
-            printf '%s' "${DOCKER_METADATA_OUTPUT_TAG_NAMES:-}" \
+            # DOCKER_METADATA_OUTPUT_TAGS already has the fully-qualified
+            # refs (one per line). Pull them straight in.
+            printf '%s' "${DOCKER_METADATA_OUTPUT_TAGS:-}" \
               | jq -Rsc 'split("\n") | map(select(. != "")) | {tags: .}' \
               > /tmp/tags.json
-            echo "::notice::tags: $(cat /tmp/tags.json)"
           fi
+          echo "::notice::tags: $(cat /tmp/tags.json)"
           # Prepend the key name to the GITHUB_OUTPUT file. The runner
           # requires "key=value\n" format and refuses leading whitespace,
           # so write it with a single printf to keep the format exact.
@@ -167,9 +163,11 @@ jobs:
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
       - name: Inspect image
+        env:
+          TAGS_JSON: ${{ steps.taglist.outputs.tags }}
         run: |
-          first_tag=$(jq -r '.tags[0]' <<< '${{ steps.taglist.outputs.tags }}')
-          docker buildx imagetools inspect "${{ env.IMAGE }}:${first_tag}"
+          first_tag=$(jq -r '.tags[0]' <<< "$TAGS_JSON")
+          docker buildx imagetools inspect "${first_tag}"
 
       - uses: sigstore/cosign-installer@v3
 
@@ -179,13 +177,13 @@ jobs:
         run: |
           set -euo pipefail
           first_tag=$(jq -r '.tags[0]' <<< "$TAGS_JSON")
-          DIGEST=$(docker buildx imagetools inspect "${{ env.IMAGE }}:${first_tag}" --format '{{json .}}' | jq -r '.manifest.digest')
+          DIGEST=$(docker buildx imagetools inspect "${first_tag}" --format '{{json .}}' | jq -r '.manifest.digest')
           if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
-            echo "::error::Failed to extract manifest-list digest for ${{ env.IMAGE }}:${first_tag}"
-            docker buildx imagetools inspect "${{ env.IMAGE }}:${first_tag}" --format '{{json .}}'
+            echo "::error::Failed to extract manifest-list digest for ${first_tag}"
+            docker buildx imagetools inspect "${first_tag}" --format '{{json .}}'
             exit 1
           fi
           echo "Signing manifest list digest: $DIGEST"
           while IFS= read -r tag; do
-            [ -n "$tag" ] && cosign sign --yes "${{ env.IMAGE }}:${tag}@${DIGEST}"
+            [ -n "$tag" ] && cosign sign --yes "${tag}@${DIGEST}"
           done <<< "$(jq -r '.tags[]' <<< "$TAGS_JSON")"
