@@ -1,0 +1,181 @@
+name: Docker (GHCR)
+
+# Builds the production image and pushes it to GitHub Container Registry
+# at ghcr.io/phantomic12/manifest. Multi-arch (amd64 + arm64) manifest list
+# with a `main` rolling tag on every push to main, semver tags on version
+# tags, and the sha for traceability. Sign with cosign using GitHub's OIDC
+# token (no long-lived secrets).
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional tag suffix override (e.g. 'release'). Leave blank for the default 'main'-on-main / semver-on-tag behavior."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  IMAGE: ghcr.io/phantomic12/manifest
+  # When `tag:` is set on workflow_dispatch, the merge job emits ONLY that
+  # tag + sha — no semver, no `main`. Lets us run a release-channel build
+  # without bumping a version.
+  TAG_OVERRIDE: ${{ inputs.tag || '' }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform.arch }})
+    strategy:
+      fail-fast: true
+      matrix:
+        platform:
+          - { os: ubuntu-latest, arch: amd64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=main,enable={{is_default_branch}}
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/${{ matrix.platform.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform.arch }}
+          sbom: true
+          provenance: mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge & Publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=main,enable={{is_default_branch}}
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Build tag list
+        id: taglist
+        run: |
+          set -euo pipefail
+          if [ -n "${{ env.TAG_OVERRIDE }}" ]; then
+            # Release-channel mode: only the override tag + sha, no semver,
+            # no main. Lets `tag: release` produce a stable channel without
+            # touching the version.
+            TAGS_JSON=$(jq -nc --arg t "${{ env.TAG_OVERRIDE }}" \
+              '{tags: [$t, ("sha-" + env.SHA_SHORT)]}')
+            SHA_SHORT="${GITHUB_SHA::7}"
+            TAGS_JSON=$(jq -nc --arg t "${{ env.TAG_OVERRIDE }}" --arg s "$SHA_SHORT" \
+              '{tags: [$t, "sha-" + $s]}')
+            echo "tags=$TAGS_JSON" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release-channel build — only ${{ env.TAG_OVERRIDE }} + sha tagged"
+          else
+            TAGS_JSON='{"tags":[]}'
+            while IFS= read -r tag; do
+              [ -n "$tag" ] && TAGS_JSON=$(jq --arg t "$tag" '.tags += [$t]' <<< "$TAGS_JSON")
+            done <<< "${{ steps.meta.outputs.tags }}"
+            echo "tags=$TAGS_JSON" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          TAGS_JSON: ${{ steps.taglist.outputs.tags }}
+        run: |
+          set -euo pipefail
+          tag_args=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$TAGS_JSON")
+          # shellcheck disable=SC2086
+          docker buildx imagetools create \
+            $tag_args \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          first_tag=$(jq -r '.tags[0]' <<< '${{ steps.taglist.outputs.tags }}')
+          docker buildx imagetools inspect "${{ env.IMAGE }}:${first_tag}"
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign published image
+        env:
+          TAGS_JSON: ${{ steps.taglist.outputs.tags }}
+        run: |
+          set -euo pipefail
+          first_tag=$(jq -r '.tags[0]' <<< "$TAGS_JSON")
+          DIGEST=$(docker buildx imagetools inspect "${{ env.IMAGE }}:${first_tag}" --format '{{json .}}' | jq -r '.manifest.digest')
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            echo "::error::Failed to extract manifest-list digest for ${{ env.IMAGE }}:${first_tag}"
+            docker buildx imagetools inspect "${{ env.IMAGE }}:${first_tag}" --format '{{json .}}'
+            exit 1
+          fi
+          echo "Signing manifest list digest: $DIGEST"
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && cosign sign --yes "${{ env.IMAGE }}:${tag}@${DIGEST}"
+          done <<< "$(jq -r '.tags[]' <<< "$TAGS_JSON")"
