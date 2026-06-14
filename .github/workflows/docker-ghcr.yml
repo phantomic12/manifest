@@ -125,9 +125,6 @@ jobs:
         id: taglist
         env:
           TAG_OVERRIDE: ${{ inputs.tag || '' }}
-          # The docker/metadata-action exports DOCKER_METADATA_OUTPUT_TAG_NAMES
-          # as a process env var (multiline, one bare tag-name per line).
-          # We just read it directly in bash — no ${{ }} round-trip needed.
         run: |
           set -euo pipefail
           if [ -n "$TAG_OVERRIDE" ]; then
@@ -135,14 +132,25 @@ jobs:
             # no main. Lets `tag: release` produce a stable channel without
             # touching the version.
             SHA_SHORT="${GITHUB_SHA::7}"
-            TAGS_JSON=$(jq -nc --arg t "$TAG_OVERRIDE" --arg s "$SHA_SHORT" \
-              '{tags: [$t, ("sha-" + $s)]}')
+            jq -nc --arg t "$TAG_OVERRIDE" --arg s "$SHA_SHORT" \
+              '{tags: [$t, ("sha-" + $s)]}' > "$GITHUB_OUTPUT"
+            jq -nc --arg t "$TAG_OVERRIDE" --arg s "$SHA_SHORT" \
+              '{tags: [$t, ("sha-" + $s)]}' > /tmp/tags.json
+            echo "::notice::tags: $(cat /tmp/tags.json)"
           else
-            TAGS_JSON=$(printf '%s' "${DOCKER_METADATA_OUTPUT_TAG_NAMES:-}" \
-              | jq -R -s 'split("\n") | map(select(. != "")) | {tags: .}')
+            # DOCKER_METADATA_OUTPUT_TAG_NAMES is multiline (one bare
+            # tag-name per line). Build {tags: [...]} JSON.
+            printf '%s' "${DOCKER_METADATA_OUTPUT_TAG_NAMES:-}" \
+              | jq -R -s 'split("\n") | map(select(. != "")) | {tags: .}' \
+              > /tmp/tags.json
+            cp /tmp/tags.json "$GITHUB_OUTPUT"
+            echo "::notice::tags: $(cat /tmp/tags.json)"
           fi
-          echo "tags=$TAGS_JSON" >> "$GITHUB_OUTPUT"
-          echo "::notice::tags: $(jq -c . <<< "$TAGS_JSON")"
+          # Prepend the key name to the GITHUB_OUTPUT file. The runner
+          # requires "key=value\n" format and refuses leading whitespace,
+          # so write it with a single printf to keep the format exact.
+          { printf 'tags='; cat /tmp/tags.json; printf '\n'; } > "$GITHUB_OUTPUT.tmp"
+          mv "$GITHUB_OUTPUT.tmp" "$GITHUB_OUTPUT"
 
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
