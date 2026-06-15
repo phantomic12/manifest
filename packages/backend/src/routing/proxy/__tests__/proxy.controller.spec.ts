@@ -75,7 +75,7 @@ function mockRequest(
 
 describe('ProxyController', () => {
   let controller: ProxyController;
-  let proxyService: { proxyRequest: jest.Mock };
+  let proxyService: { proxyRequest: jest.Mock; proxyMultimodalRequest: jest.Mock };
   let rateLimiter: {
     checkLimit: jest.Mock;
     checkIpLimit: jest.Mock;
@@ -112,7 +112,7 @@ describe('ProxyController', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    proxyService = { proxyRequest: jest.fn() };
+    proxyService = { proxyRequest: jest.fn(), proxyMultimodalRequest: jest.fn() };
     rateLimiter = {
       checkLimit: jest.fn(),
       checkIpLimit: jest.fn(),
@@ -3162,7 +3162,122 @@ describe('ProxyController', () => {
       expect(decision.modality).toBe('text');
       expect(decision.primary).toMatchObject({ provider: 'OpenAI', model: 'gpt-4o-mini' });
     });
+  });
 
+  describe('multimodal proxy paths', () => {
+    it('forwards /v1/images/generations to the multimodal upstream path', async () => {
+      const mockImageResp = new Response(Buffer.from('fake-png-bytes'), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      });
+      proxyService.proxyMultimodalRequest = jest.fn().mockResolvedValue({
+        forward: { response: mockImageResp, isGoogle: false, isAnthropic: false },
+        meta: {
+          tier: 'simple',
+          model: 'dall-e-3',
+          provider: 'OpenAI',
+          confidence: 1,
+          reason: 'modality:image',
+          response_mode: 'buffered',
+          output_modality: 'image',
+          auth_type: 'api_key',
+          fallbackRoutes: [],
+        },
+        failedFallbacks: [],
+      });
+
+      const req = mockRequest({
+        model: 'dall-e-3',
+        prompt: 'a cat wearing a hat',
+        n: 1,
+        size: '1024x1024',
+      });
+      const { res, headers } = mockResponse();
+      await controller.imageGenerations(req as never, res as never);
+
+      expect(proxyService.proxyMultimodalRequest).toHaveBeenCalledTimes(1);
+      const call = (proxyService.proxyMultimodalRequest as jest.Mock).mock.calls[0][0];
+      expect(call.modality).toBe('image');
+      expect(call.apiMode).toBe('image_generations');
+      expect(call.body).toMatchObject({ model: 'dall-e-3', prompt: 'a cat wearing a hat' });
+      // Response body was passed through verbatim.
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(headers['content-type']).toBe('image/png');
+      // Live-routing-monitor recorded the multimodal decision.
+      expect(mockDecisionRecorder.record).toHaveBeenCalledTimes(1);
+      const [, decision] = mockDecisionRecorder.record.mock.calls[0];
+      expect(decision.modality).toBe('image');
+      expect(decision.primary).toMatchObject({ provider: 'OpenAI', model: 'dall-e-3' });
+    });
+
+    it('returns a friendly error when no multimodal assignment is configured', async () => {
+      // proxyMultimodalRequest returns a "manifest" friendly response
+      // when no assignment is configured (the meta has provider: 'manifest').
+      const mockFriendlyResp = new Response(
+        JSON.stringify({ choices: [{ message: { content: 'No image model configured' } }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+      proxyService.proxyMultimodalRequest = jest.fn().mockResolvedValue({
+        forward: { response: mockFriendlyResp, isGoogle: false, isAnthropic: false },
+        meta: {
+          tier: 'simple',
+          model: 'manifest',
+          provider: 'manifest',
+          confidence: 1,
+          reason: 'no_multimodal_assignment',
+          response_mode: 'buffered',
+          output_modality: 'text',
+          auth_type: 'api_key',
+          fallbackRoutes: [],
+        },
+        failedFallbacks: [],
+      });
+
+      const req = mockRequest({ model: 'dall-e-3', prompt: 'a cat' });
+      const { res } = mockResponse();
+      await controller.imageGenerations(req as never, res as never);
+
+      // No live-routing-monitor entry for friendly responses.
+      expect(mockDecisionRecorder.record).not.toHaveBeenCalled();
+    });
+
+    it('forwards /v1/audio/speech to the multimodal upstream path', async () => {
+      const mockAudioResp = new Response(Buffer.from('fake-mp3-bytes'), {
+        status: 200,
+        headers: { 'Content-Type': 'audio/mpeg' },
+      });
+      proxyService.proxyMultimodalRequest = jest.fn().mockResolvedValue({
+        forward: { response: mockAudioResp, isGoogle: false, isAnthropic: false },
+        meta: {
+          tier: 'simple',
+          model: 'tts-1',
+          provider: 'OpenAI',
+          confidence: 1,
+          reason: 'modality:audio',
+          response_mode: 'buffered',
+          output_modality: 'audio',
+          auth_type: 'api_key',
+          fallbackRoutes: [],
+        },
+        failedFallbacks: [],
+      });
+
+      const req = mockRequest({ model: 'tts-1', input: 'hello world', voice: 'alloy' });
+      const { res, headers } = mockResponse();
+      await controller.audioSpeech(req as never, res as never);
+
+      expect(proxyService.proxyMultimodalRequest).toHaveBeenCalledTimes(1);
+      const call = (proxyService.proxyMultimodalRequest as jest.Mock).mock.calls[0][0];
+      expect(call.modality).toBe('audio');
+      expect(call.apiMode).toBe('audio_speech');
+      expect(headers['content-type']).toBe('audio/mpeg');
+      expect(mockDecisionRecorder.record).toHaveBeenCalledTimes(1);
+      const [, decision] = mockDecisionRecorder.record.mock.calls[0];
+      expect(decision.modality).toBe('audio');
+    });
+  });
+
+  describe('live routing monitor integration (continued)', () => {
     it('records failed fallbacks in the decision payload', async () => {
       const mockProviderResp = new Response(
         JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),

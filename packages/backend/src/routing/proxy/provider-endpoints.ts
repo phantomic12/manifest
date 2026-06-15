@@ -18,6 +18,23 @@ export interface ProviderEndpoint {
   buildHeaders: (apiKey: string, authType?: string) => Record<string, string>;
   buildPath: (model: string) => string;
   /**
+   * Per-modality upstream paths. When the proxy is dispatching a
+   * multimodal request (image / audio / video), it calls the matching
+   * builder instead of `buildPath`. If the endpoint doesn't override
+   * one, the proxy falls back to the OpenAI-standard paths
+   * (`/v1/images/generations`, `/v1/audio/speech`,
+   * `/v1/videos/generations`).
+   *
+   * Image-gen + speech + video-gen endpoints take a fundamentally
+   * different body shape from chat-completions (no `messages` array,
+   * no `stream` flag, different parameter names) so the proxy passes
+   * the request body through verbatim. The shape delta is the
+   * caller's responsibility — OpenAI's docs are the spec.
+   */
+  buildImagePath?: (model: string) => string;
+  buildAudioPath?: (model: string) => string;
+  buildVideoPath?: (model: string) => string;
+  /**
    * Optional override used when the request is a stream. Some upstreams
    * (notably the CodeAssist API) expose a separate `:streamGenerateContent`
    * method instead of accepting `?alt=sse` on the non-streaming path. When

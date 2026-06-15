@@ -165,6 +165,7 @@ describe('ProxyService — orchestration', () => {
       reasoningCache,
       modelParamsService as unknown as AgentModelParamsService,
       providerParamSpecs as unknown as ProviderParamSpecService,
+      { forwardMultimodal: jest.fn() } as never,
     );
   });
 
