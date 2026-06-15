@@ -45,6 +45,9 @@ import {
   RoutingDecision,
 } from '../../common/services/routing-decision-recorder.service';
 import type { RoutingMeta } from './proxy.service';
+import { detectRequestModality } from './modality-detector';
+import { isMultimodalOutputModality, type MultimodalOutputModality } from 'manifest-shared';
+import { ResolveService } from '../resolve/resolve.service';
 
 const MAX_SEEN_USERS = 10_000;
 const SEEN_USER_TTL_MS = 24 * 60 * 60 * 1000;
@@ -68,6 +71,7 @@ export class ProxyController {
     private readonly reasoningCache: ReasoningContentCache,
     private readonly recordingCache: AgentRecordingCacheService,
     private readonly decisionRecorder: RoutingDecisionRecorder,
+    private readonly resolveService: ResolveService,
   ) {}
 
   @Get('models')
@@ -153,16 +157,29 @@ export class ProxyController {
         apiMode,
       });
 
+      // Multimodal detection: if the request body carries image/audio/
+      // video content (or an explicit output_modality hint), classify
+      // it. If the agent has a multimodal assignment configured, swap
+      // the recorded `meta` to point at it so the live-routing-monitor
+      // panel shows the multimodal model. The actual HTTP forward
+      // still goes through the text-mode path (this PR is about the
+      // routing category, not a new /v1/images/generations proxy).
+      const modality = detectRequestModality(body);
+      const effectiveMeta =
+        isMultimodalOutputModality(modality) && meta.provider && meta.provider !== 'manifest'
+          ? await this.applyMultimodalRouting(req.ingestionContext.agentId, modality, meta)
+          : meta;
+
       // Fan the routing decision out to the live-routing-monitor panel
       // BEFORE we send the response so SSE subscribers see the decision
       // in lockstep with the bytes coming back. We skip the synthetic
       // friendly responses (provider === 'manifest') — there's no real
       // routing decision there, just an error message.
-      if (meta.provider && meta.provider !== 'manifest') {
+      if (effectiveMeta.provider && effectiveMeta.provider !== 'manifest') {
         this.recordRoutingDecision({
           userId,
           agentId: req.ingestionContext.agentId,
-          meta,
+          meta: effectiveMeta,
           failedFallbacks: failedFallbacks?.length ?? 0,
         });
       }
@@ -394,6 +411,48 @@ export class ProxyController {
       reason: meta.reason,
     };
     this.decisionRecorder.record(userId, decision);
+  }
+
+  /**
+   * If the agent has a multimodal assignment for this modality, swap
+   * the recorded `meta` to point at it. The actual HTTP forward still
+   * uses the original text-mode `forward.response` — this PR is about
+   * the routing category (which model would answer an image/audio/
+   * video request), not a new proxy path. Returns the original `meta`
+   * unchanged when no multimodal assignment is configured.
+   *
+   * The 'reason' field is rewritten to 'modality:<kind>' so the live
+   * monitor (and any future analytics) can distinguish multimodal
+   * resolutions from text-tier resolutions at a glance.
+   */
+  private async applyMultimodalRouting(
+    agentId: string,
+    modality: MultimodalOutputModality,
+    currentMeta: RoutingMeta,
+  ): Promise<RoutingMeta> {
+    const mm = await this.resolveService.resolveForModality(agentId, modality);
+    if (!mm || !mm.route) {
+      this.logger.warn(
+        `Multimodal request detected (modality=${modality}) for agent=${agentId} ` +
+          `but no multimodal assignment configured — routing as text`,
+      );
+      return currentMeta;
+    }
+    return {
+      ...currentMeta,
+      model: mm.route.model,
+      provider: mm.route.provider,
+      auth_type: mm.route.authType,
+      output_modality: modality,
+      reason: `modality:${modality}`,
+      tier: mm.tier,
+      confidence: 1,
+      fallbackRoutes: (mm.fallback_routes ?? []).map((r) => ({
+        provider: r.provider,
+        model: r.model,
+        authType: r.authType,
+      })),
+    };
   }
 
   private evictExpiredUsers(now: number): void {

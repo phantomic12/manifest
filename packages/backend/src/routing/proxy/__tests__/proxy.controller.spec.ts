@@ -185,6 +185,7 @@ describe('ProxyController', () => {
       new ReasoningContentCache(),
       { isRecording: jest.fn().mockResolvedValue(false), invalidate: jest.fn() } as never,
       mockDecisionRecorder as never,
+      { resolveForModality: jest.fn().mockResolvedValue(null) } as never,
     );
   });
 
@@ -3065,6 +3066,101 @@ describe('ProxyController', () => {
       });
       expect(decision.requestId).toMatch(/^[0-9a-f-]{36}$/); // uuid v4
       expect(typeof decision.ts).toBe('number');
+    });
+
+    it('routes an image request to the configured multimodal model', async () => {
+      const mockProviderResp = new Response(
+        JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+      proxyService.proxyRequest.mockResolvedValue({
+        forward: { response: mockProviderResp, isGoogle: false, isAnthropic: false },
+        meta: {
+          tier: 'simple',
+          model: 'gpt-4o-mini',
+          provider: 'OpenAI',
+          confidence: 0.6,
+          reason: 'simple request',
+          response_mode: 'buffered',
+          output_modality: 'text',
+          auth_type: 'api_key',
+          fallbackRoutes: [],
+        },
+      });
+      // The controller has a mock resolveService.resolveForModality that
+      // returns null by default; override to return an image assignment.
+      const resolveService = (
+        controller as unknown as { resolveService: { resolveForModality: jest.Mock } }
+      ).resolveService;
+      resolveService.resolveForModality.mockResolvedValueOnce({
+        tier: 'simple',
+        route: { provider: 'OpenAI', authType: 'api_key', model: 'dall-e-3' },
+        fallback_routes: [],
+        output_modality: 'image',
+        response_mode: 'buffered',
+        confidence: 1,
+        score: 0,
+        reason: 'modality:image',
+      });
+
+      const req = mockRequest({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'make a cat' },
+              { type: 'image_url', image_url: { url: 'https://example.com/ref.jpg' } },
+            ],
+          },
+        ],
+      });
+      const { res } = mockResponse();
+      await controller.chatCompletions(req as never, res as never);
+
+      expect(mockDecisionRecorder.record).toHaveBeenCalledTimes(1);
+      const [, decision] = mockDecisionRecorder.record.mock.calls[0];
+      // The decision was re-pointed to the multimodal assignment.
+      expect(decision.modality).toBe('image');
+      expect(decision.primary).toMatchObject({ provider: 'OpenAI', model: 'dall-e-3' });
+      expect(decision.reason).toBe('modality:image');
+    });
+
+    it('falls back to text when an image request comes in with no multimodal assignment', async () => {
+      const mockProviderResp = new Response(
+        JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+      proxyService.proxyRequest.mockResolvedValue({
+        forward: { response: mockProviderResp, isGoogle: false, isAnthropic: false },
+        meta: {
+          tier: 'simple',
+          model: 'gpt-4o-mini',
+          provider: 'OpenAI',
+          confidence: 0.6,
+          reason: 'simple request',
+          response_mode: 'buffered',
+          output_modality: 'text',
+          auth_type: 'api_key',
+          fallbackRoutes: [],
+        },
+      });
+      // Default mock returns null — no multimodal assignment.
+      const req = mockRequest({
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'image_url', image_url: { url: 'https://example.com/x.jpg' } }],
+          },
+        ],
+      });
+      const { res } = mockResponse();
+      await controller.chatCompletions(req as never, res as never);
+
+      expect(mockDecisionRecorder.record).toHaveBeenCalledTimes(1);
+      const [, decision] = mockDecisionRecorder.record.mock.calls[0];
+      // Falls back to text-mode meta unchanged.
+      expect(decision.modality).toBe('text');
+      expect(decision.primary).toMatchObject({ provider: 'OpenAI', model: 'gpt-4o-mini' });
     });
 
     it('records failed fallbacks in the decision payload', async () => {
