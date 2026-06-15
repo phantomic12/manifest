@@ -47,7 +47,10 @@ export type ScoringReason =
   | 'heartbeat'
   | 'specificity'
   | 'default'
-  | 'header-match';
+  | 'header-match'
+  | 'modality:image'
+  | 'modality:audio'
+  | 'modality:video';
 
 export interface DimensionScore {
   name: string;

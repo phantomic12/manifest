@@ -22,6 +22,7 @@ import type {
   ModelRoute,
   ResponseMode,
   OutputModality,
+  MultimodalOutputModality,
   SpecificityCategory,
   TierSlot,
 } from 'manifest-shared';
@@ -198,6 +199,51 @@ export class ResolveService {
       confidence: 1,
       score: 0,
       reason,
+    };
+  }
+
+  /**
+   * Resolve a multimodal request (image / audio / video) to the
+   * first tier_assignment whose `output_modality` matches. Looks at
+   * tiers first; falls back to specificity assignments. Returns
+   * null if no multimodal assignment is configured for the agent —
+   * the caller should then fall through to the text path.
+   *
+   * The choice of "first matching" is intentional: there is at
+   * most one slot per modality per agent in the data model (the
+   * tier / specificity / header-tier rows are unique per slot per
+   * agent). If the agent has been configured with a "simple →
+   * dall-e" assignment AND a "hard → dall-e-3" assignment, both
+   * matching `modality = 'image'`, the simple one wins. That
+   * matches the existing override semantics elsewhere in the
+   * resolver: simpler tiers are tried first.
+   */
+  async resolveForModality(
+    agentId: string,
+    modality: MultimodalOutputModality,
+  ): Promise<ResolveResponse | null> {
+    const tiers = await this.tierService.getTiers(agentId);
+    const match = tiers.find((t) => t.output_modality === modality);
+    if (!match) return null;
+
+    const outputModality = outputModalityFor(match);
+    const responseMode = responseModeFor(match);
+    const fallbackRoutes = readFallbackRoutes(match);
+    const routeChain = await this.buildResolvedRouteChain(agentId, match, fallbackRoutes);
+    const effectiveRoutes = effectiveRoutesForResponseMode(
+      responseMode,
+      routeChain.primaryRoute,
+      routeChain.fallbackRoutes,
+    );
+    return {
+      tier: match.tier as TierSlot,
+      route: effectiveRoutes.primaryRoute,
+      fallback_routes: effectiveRoutes.fallbackRoutes,
+      output_modality: outputModality,
+      response_mode: responseMode,
+      confidence: 1,
+      score: 0,
+      reason: `modality:${modality}`,
     };
   }
 

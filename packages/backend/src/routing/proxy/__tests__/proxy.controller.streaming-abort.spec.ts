@@ -138,6 +138,7 @@ describe('ProxyController streaming abort', () => {
         stream: jest.fn(),
         onModuleDestroy: jest.fn(),
       } as never,
+      { resolveForModality: jest.fn().mockResolvedValue(null) } as never,
     );
   });
 

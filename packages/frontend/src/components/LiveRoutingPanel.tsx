@@ -27,11 +27,25 @@ const tierColor = (tier: string): string => {
       return 'hsl(var(--muted-foreground))';
   }
 };
+const modalityLabel: Record<RoutingDecision['modality'], string> = {
+  text: 'text',
+  image: 'image',
+  audio: 'audio',
+  video: 'video',
+};
+
+const modalityColor: Record<RoutingDecision['modality'], string> = {
+  text: 'hsl(var(--muted-foreground))',
+  image: 'hsl(280 65% 60%)',
+  audio: 'hsl(199 89% 48%)',
+  video: 'hsl(15 90% 55%)',
+};
 
 const DecisionRow: Component<{ decision: RoutingDecision }> = (props) => {
   const success = () => props.decision.successModel;
   // Was the primary what answered, or did a fallback rescue the request?
   const fallbackUsed = () => props.decision.successModel?.model !== props.decision.primary?.model;
+  const isMultimodal = () => props.decision.modality !== 'text';
   return (
     <div class="live-routing-row">
       <div class="live-routing-row__time">{formatTime(props.decision.ts)}</div>
@@ -43,6 +57,15 @@ const DecisionRow: Component<{ decision: RoutingDecision }> = (props) => {
         {props.decision.tier}
       </div>
       <div class="live-routing-row__models">
+        <Show when={isMultimodal()}>
+          <span
+            class="live-routing-modality-chip"
+            style={{ color: modalityColor[props.decision.modality] }}
+            title={`Modality: ${modalityLabel[props.decision.modality]}`}
+          >
+            {modalityLabel[props.decision.modality]}
+          </span>
+        </Show>
         <Show
           when={props.decision.primary}
           fallback={<span class="live-routing-no-route">no route</span>}
