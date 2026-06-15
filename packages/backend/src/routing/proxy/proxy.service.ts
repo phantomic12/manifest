@@ -109,6 +109,14 @@ export interface RoutingMeta {
   output_modality?: OutputModality;
   /** Effective response transport configured on the resolved routing chain. */
   response_mode?: ResponseMode;
+  /**
+   * Full ordered list of fallback routes the proxy considered, in
+   * resolution order. Distinct from `failedFallbacks` (which only tracks
+   * the ones actually tried and that errored) — this is the candidate
+   * list the routing chain had on the table. Used by the live routing
+   * monitor to render the full chain, not just the eventual winner.
+   */
+  fallbackRoutes?: Array<{ provider: string; model: string; authType?: string }>;
 }
 
 export interface ProxyResult {
@@ -664,6 +672,11 @@ export class ProxyService {
       header_tier_color: resolved.header_tier_color,
       output_modality: resolved.output_modality,
       response_mode: resolved.response_mode ?? DEFAULT_RESPONSE_MODE,
+      fallbackRoutes: (resolved.fallback_routes ?? []).map((r) => ({
+        provider: r.provider,
+        model: r.model,
+        authType: r.authType,
+      })),
       ...overrides,
     };
   }

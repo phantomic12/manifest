@@ -2,7 +2,7 @@ import { Controller, Sse, UnauthorizedException } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { mergeMap } from 'rxjs/operators';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { IngestEventBusService } from '../common/services/ingest-event-bus.service';
+import { IngestEventBusService, IngestEvent } from '../common/services/ingest-event-bus.service';
 import { AuthUser } from '../auth/auth.instance';
 
 interface MessageEvent {
@@ -23,11 +23,19 @@ export class SseController {
     // Each bus event fans out as TWO SSE messages: the typed one (so new
     // clients can target by kind) AND the legacy 'ping' (so older frontends
     // listening on 'ping' still see every change during a partial upgrade).
+    //
+    // 'routing-decision' events carry a JSON-serialized RoutingDecision
+    // payload in the typed message's data field, so the frontend can render
+    // the live decision directly without a refetch. All other kinds still
+    // send the kind string as data (no change from before).
     return this.eventBus.forUser(user.id).pipe(
-      mergeMap((evt) => [
-        { type: evt.kind, data: evt.kind },
-        { type: 'ping', data: 'ping' },
-      ]),
+      mergeMap((evt: IngestEvent) => {
+        const typed: MessageEvent =
+          evt.kind === 'routing-decision' && evt.payload !== undefined
+            ? { type: evt.kind, data: JSON.stringify(evt.payload) }
+            : { type: evt.kind, data: evt.kind };
+        return [typed, { type: 'ping', data: 'ping' }];
+      }),
     );
   }
 }

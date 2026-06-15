@@ -105,4 +105,31 @@ describe('IngestEventBusService', () => {
 
     expect(received).toEqual([{ userId: 'COMPLETE', kind: 'message' }]);
   });
+
+  it("emits 'routing-decision' events synchronously, bypassing the 250ms debounce", () => {
+    const received: IngestEvent[] = [];
+    service.forUser('user-1').subscribe((e) => received.push(e));
+
+    service.emit('user-1', 'routing-decision', { requestId: 'a' });
+    // No jest.advanceTimersByTime — should fire immediately.
+    expect(received).toEqual([
+      { userId: 'user-1', kind: 'routing-decision', payload: { requestId: 'a' } },
+    ]);
+  });
+
+  it("coalesces multiple 'routing-decision' emissions (no debounce = no coalescing)", () => {
+    const received: IngestEvent[] = [];
+    service.forUser('user-1').subscribe((e) => received.push(e));
+
+    service.emit('user-1', 'routing-decision', { requestId: 'a' });
+    service.emit('user-1', 'routing-decision', { requestId: 'b' });
+    service.emit('user-1', 'routing-decision', { requestId: 'c' });
+
+    expect(received).toHaveLength(3);
+    expect(received.map((e) => e.payload)).toEqual([
+      { requestId: 'a' },
+      { requestId: 'b' },
+      { requestId: 'c' },
+    ]);
+  });
 });

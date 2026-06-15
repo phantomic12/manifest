@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Tenant } from '../entities/tenant.entity';
 import { Agent } from '../entities/agent.entity';
 import { IngestEventBusService } from './services/ingest-event-bus.service';
+import { RoutingDecisionRecorder } from './services/routing-decision-recorder.service';
 import { ManifestRuntimeService } from './services/manifest-runtime.service';
 import { TenantCacheService } from './services/tenant-cache.service';
 import { AgentRecordingCacheService } from './services/agent-recording-cache.service';
@@ -14,6 +15,7 @@ import { AgentCacheInterceptor } from './interceptors/agent-cache.interceptor';
   imports: [TypeOrmModule.forFeature([Tenant, Agent])],
   providers: [
     IngestEventBusService,
+    RoutingDecisionRecorder,
     ManifestRuntimeService,
     TenantCacheService,
     AgentRecordingCacheService,
@@ -22,6 +24,7 @@ import { AgentCacheInterceptor } from './interceptors/agent-cache.interceptor';
   ],
   exports: [
     IngestEventBusService,
+    RoutingDecisionRecorder,
     ManifestRuntimeService,
     TenantCacheService,
     AgentRecordingCacheService,

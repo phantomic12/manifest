@@ -103,6 +103,12 @@ describe('ProxyController', () => {
   };
   let mockPricingCache: { getByModel: jest.Mock };
   let recorder: ProxyMessageRecorder;
+  let mockDecisionRecorder: {
+    record: jest.Mock;
+    recent: jest.Mock;
+    stream: jest.Mock;
+    onModuleDestroy: jest.Mock;
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -146,6 +152,13 @@ describe('ProxyController', () => {
           }),
         ),
     };
+    const mockDecisionRecorderLocal = {
+      record: jest.fn(),
+      recent: jest.fn().mockReturnValue([]),
+      stream: jest.fn().mockReturnValue({ subscribe: jest.fn() }),
+      onModuleDestroy: jest.fn(),
+    };
+    mockDecisionRecorder = mockDecisionRecorderLocal;
     recorder = new ProxyMessageRecorder(
       mockMessageRepo as never,
       mockPricingCache as never,
@@ -171,6 +184,7 @@ describe('ProxyController', () => {
       new ThinkingBlockCache(),
       new ReasoningContentCache(),
       { isRecording: jest.fn().mockResolvedValue(false), invalidate: jest.fn() } as never,
+      mockDecisionRecorder as never,
     );
   });
 
@@ -3009,5 +3023,93 @@ describe('ProxyController', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(headers['X-Manifest-Fallback-Exhausted']).toBeUndefined();
+  });
+
+  describe('live routing monitor integration', () => {
+    it('records the routing decision via the decision recorder after a successful proxy', async () => {
+      const mockProviderResp = new Response(
+        JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+      proxyService.proxyRequest.mockResolvedValue({
+        forward: { response: mockProviderResp, isGoogle: false, isAnthropic: false },
+        meta: {
+          tier: 'medium',
+          model: 'gpt-4o',
+          provider: 'OpenAI',
+          confidence: 0.7,
+          reason: 'medium complexity',
+          response_mode: 'buffered',
+          output_modality: 'text',
+          auth_type: 'api_key',
+          fallbackRoutes: [{ provider: 'anthropic', model: 'claude-haiku-4', authType: 'api_key' }],
+        },
+      });
+
+      const req = mockRequest({ messages: [{ role: 'user', content: 'hi' }] });
+      const { res } = mockResponse();
+      await controller.chatCompletions(req as never, res as never);
+
+      expect(mockDecisionRecorder.record).toHaveBeenCalledTimes(1);
+      const [, decision] = mockDecisionRecorder.record.mock.calls[0];
+      expect(decision).toMatchObject({
+        tier: 'medium',
+        primary: { provider: 'OpenAI', model: 'gpt-4o' },
+        fallbacks: [{ provider: 'anthropic', model: 'claude-haiku-4' }],
+        modality: 'text',
+        responseMode: 'non_stream',
+        failedFallbacks: 0,
+        confidence: 0.7,
+        reason: 'medium complexity',
+        successModel: { provider: 'OpenAI', model: 'gpt-4o' },
+      });
+      expect(decision.requestId).toMatch(/^[0-9a-f-]{36}$/); // uuid v4
+      expect(typeof decision.ts).toBe('number');
+    });
+
+    it('records failed fallbacks in the decision payload', async () => {
+      const mockProviderResp = new Response(
+        JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+      proxyService.proxyRequest.mockResolvedValue({
+        forward: { response: mockProviderResp, isGoogle: false, isAnthropic: false },
+        meta: {
+          tier: 'simple',
+          model: 'claude-haiku-4',
+          provider: 'Anthropic',
+          confidence: 0.6,
+          reason: 'simple request',
+          response_mode: 'buffered',
+          auth_type: 'api_key',
+          // Primary failed, fallback succeeded. The original primary
+          // identity is preserved on fallbackFromModel / primaryProvider.
+          fallbackFromModel: 'gpt-4o-mini',
+          primaryProvider: 'OpenAI',
+          primaryAuthType: 'api_key',
+          fallbackIndex: 0,
+          fallbackRoutes: [{ provider: 'anthropic', model: 'claude-haiku-4', authType: 'api_key' }],
+        },
+        failedFallbacks: [
+          {
+            model: 'gpt-4o-mini',
+            provider: 'OpenAI',
+            fallbackIndex: -1, // primary
+            status: 503,
+            errorBody: 'upstream busy',
+          },
+        ],
+      });
+
+      const req = mockRequest({ messages: [{ role: 'user', content: 'hi' }] });
+      const { res } = mockResponse();
+      await controller.chatCompletions(req as never, res as never);
+
+      expect(mockDecisionRecorder.record).toHaveBeenCalledTimes(1);
+      const [, decision] = mockDecisionRecorder.record.mock.calls[0];
+      expect(decision.primary).toEqual({ provider: 'OpenAI', model: 'gpt-4o-mini' });
+      expect(decision.successModel).toEqual({ provider: 'Anthropic', model: 'claude-haiku-4' });
+      expect(decision.failedFallbacks).toBe(1);
+    });
   });
 });

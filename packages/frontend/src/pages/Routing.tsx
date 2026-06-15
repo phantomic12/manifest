@@ -12,6 +12,7 @@ import RoutingModals from '../components/RoutingModals.js';
 import { buildPipelineHelp } from '../components/RoutingPipelineCard.js';
 import RoutingTabs from '../components/RoutingTabs.js';
 import ResponseModeModal from '../components/ResponseModeModal.js';
+import LiveRoutingPanel from '../components/LiveRoutingPanel.js';
 import { toast } from '../services/toast-store.js';
 import { agentDisplayName } from '../services/agent-display-name.js';
 import RoutingDefaultTierSection from './RoutingDefaultTierSection.js';
@@ -48,6 +49,7 @@ import { STAGES } from '../services/providers.js';
 // Route-scoped: keep the large routing stylesheet (and its sub-imports) out
 // of the global theme bundle so login/overview/etc. don't download it.
 import '../styles/routing.css';
+import '../styles/live-routing.css';
 
 const Routing: Component = () => {
   const params = useParams<{ agentName: string }>();
@@ -639,6 +641,11 @@ const Routing: Component = () => {
               ),
             }}
           </RoutingTabs>
+
+          {/* Live routing monitor — sees every routing decision made
+              against this agent (and any other agent in the same tenant)
+              via the SSE 'routing-decision' event stream. */}
+          <LiveRoutingPanel />
 
           <RoutingFooter
             hasOverrides={hasOverrides}
