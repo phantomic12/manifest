@@ -418,7 +418,7 @@ export const normalizeProviderName = (s: string): string =>
   s
     .toLowerCase()
     .trim()
-    .replace(/[\\s._\\-]+/g, '');
+    .replace(/[\s._-]+/g, '');
 
 /**
  * Setup hints for local-LLM provider tiles: default port, setup command,

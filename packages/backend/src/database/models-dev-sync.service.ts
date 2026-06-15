@@ -335,11 +335,35 @@ export class ModelsDevSyncService implements OnModuleInit {
   private resolveCustomProviderKey(providerName: string): string | null {
     const trimmed = providerName.trim();
     if (!trimmed) return null;
-    return (
-      this.customProviderIndex.get(trimmed.toLowerCase()) ??
-      this.customProviderIndex.get(normalizeProviderName(trimmed)) ??
-      null
-    );
+    const lower = trimmed.toLowerCase();
+    const normalized = normalizeProviderName(trimmed);
+    // Exact hit first — the cheapest path and the only one that's
+    // unambiguous. If the user gave us "Kilo Gateway" or "kilo" or
+    // "kilo" (normalized), we should find it directly.
+    const exact = this.customProviderIndex.get(lower) ?? this.customProviderIndex.get(normalized);
+    if (exact) return exact;
+    // Fall back to a bounded prefix match. A user searching for
+    // "kilo-gateway" should still land on the "kilo" provider when
+    // the display name they were given was abbreviated — but we don't
+    // want a one-letter search to spuriously match. Require the
+    // shorter side to be at least 4 chars so we don't accidentally
+    // resolve "k" or "an" to whatever the first provider happens to
+    // be indexed. Longer queries that aren't exact still benefit (a
+    // search for "kilo" matches "kilo-gateway" but "kilocode" is a
+    // separate indexed provider, so we keep the longest match).
+    let bestMatch: { key: string; modelsDevId: string; len: number } | null = null;
+    for (const [key, modelsDevId] of this.customProviderIndex) {
+      if (key === lower || key === normalized) continue; // already tried
+      const longer = key.length > normalized.length ? key : normalized;
+      const shorter = key.length > normalized.length ? normalized : key;
+      if (shorter.length < 4) continue;
+      if (longer.startsWith(shorter)) {
+        if (!bestMatch || shorter.length > bestMatch.len) {
+          bestMatch = { key, modelsDevId, len: shorter.length };
+        }
+      }
+    }
+    return bestMatch?.modelsDevId ?? null;
   }
 
   /**
