@@ -24,7 +24,13 @@ export type ThinkingBlockLookup = (firstToolUseId: string) => ThinkingBlock[] | 
  */
 export type ReasoningContentLookup = (firstToolCallId: string) => string | null;
 
-export type ProxyApiMode = 'chat_completions' | 'responses' | 'messages';
+export type ProxyApiMode =
+  | 'chat_completions'
+  | 'responses'
+  | 'messages'
+  | 'image_generations'
+  | 'audio_speech'
+  | 'video_generations';
 
 export interface OpenAIMessage {
   role: string;

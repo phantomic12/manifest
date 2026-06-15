@@ -1,5 +1,6 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { IncomingHttpHeaders } from 'http';
 import { ResolveService } from '../resolve/resolve.service';
 import { ProviderKeyService } from '../routing-core/provider-key.service';
 import { TierService } from '../routing-core/tier.service';
@@ -14,11 +15,13 @@ import { SessionMomentumService } from './session-momentum.service';
 import { LimitCheckService } from '../../notifications/services/limit-check.service';
 import { shouldTriggerFallback } from './fallback-status-codes';
 import { Tier, TIERS, ScorerMessage } from '../../scoring/types';
-import type {
+import {
   AuthType,
+  ModelRoute,
   RequestParamDefaults,
   ResponseMode,
   OutputModality,
+  MultimodalOutputModality,
   SpecificityCategory,
   TierSlot,
 } from 'manifest-shared';
@@ -35,6 +38,7 @@ import {
   FailedFallback,
   normalizeProviderModel,
 } from './proxy-fallback.service';
+import { ProviderClient } from './provider-client';
 import { isRefreshableOAuthCredential, resolveApiKey } from './oauth-credentials';
 import {
   ProxyApiMode,
@@ -148,6 +152,7 @@ export class ProxyService {
     private readonly reasoningCache: ReasoningContentCache,
     private readonly modelParamsService: AgentModelParamsService,
     private readonly providerParamSpecs: ProviderParamSpecService,
+    private readonly providerClient: ProviderClient,
   ) {}
 
   async proxyRequest(opts: ProxyRequestOptions): Promise<ProxyResult> {
@@ -392,6 +397,90 @@ export class ProxyService {
     if (messages.length > MAX_MESSAGES_PER_REQUEST) {
       throw new BadRequestException(formatManifestError('M301', { max: MAX_MESSAGES_PER_REQUEST }));
     }
+  }
+
+  /**
+   * Forward a multimodal request to the upstream provider. Unlike
+   * `proxyRequest` which orchestrates text-mode routing + scoring +
+   * fallbacks, this method is single-shot: one upstream call, body
+   * passed through verbatim. The shape of the body is owned by the
+   * caller (image-gen = `{ model, prompt, n, size }`, speech = `{ model,
+   * input, voice }`, video = future TBD) and the proxy doesn't
+   * rewrite it.
+   *
+   * Returns a friendly response when:
+   *   - the agent has no multimodal assignment for the requested
+   *     modality (caller forgot to configure one)
+   *   - the resolved provider key is missing
+   * On the happy path returns the raw upstream response with a
+   * `meta` describing the resolution so the live-routing-monitor
+   * can record what happened.
+   */
+  async proxyMultimodalRequest(opts: {
+    agentId: string;
+    userId: string;
+    body: Record<string, unknown>;
+    sessionKey: string;
+    tenantId?: string;
+    agentName?: string;
+    signal?: AbortSignal;
+    headers?: IncomingHttpHeaders;
+    apiMode: 'image_generations' | 'audio_speech' | 'video_generations';
+    modality: MultimodalOutputModality;
+  }): Promise<ProxyResult> {
+    const { agentId, userId, body, sessionKey, signal, headers, apiMode, modality, agentName } =
+      opts;
+    const resolved = await this.resolveService.resolveForModality(agentId, modality);
+    if (!resolved || !resolved.route) {
+      this.logger.warn(
+        `Multimodal ${apiMode} request for agent=${agentId} but no ${modality} assignment configured`,
+      );
+      return buildFriendlyResponse(
+        `No ${modality} model configured for this agent. Add a ${modality} assignment in the routing config.`,
+        false,
+        'no_multimodal_assignment',
+      );
+    }
+    const route = resolved.route;
+    const credentials = await this.resolveCredentials(agentId, userId, {
+      provider: route.provider,
+      auth_type: route.authType,
+      provider_key_label: route.keyLabel ?? undefined,
+    });
+    if (credentials === null) {
+      const dashboardUrl = getDashboardUrl(this.config, agentName, 'routing');
+      const content = formatManifestError('M100', { provider: route.provider, dashboardUrl });
+      return buildFriendlyResponse(content, false, 'no_provider_key');
+    }
+    const bareModel = normalizeProviderModel(route.provider, route.model);
+    this.logger.log(
+      `Multimodal proxy: modality=${modality} model=${bareModel} provider=${route.provider}`,
+    );
+    const forward = await this.providerClient.forwardMultimodal({
+      provider: route.provider,
+      apiKey: credentials.apiKey,
+      model: bareModel,
+      body,
+      apiMode,
+      signal,
+      authType: route.authType,
+    });
+    const meta: RoutingMeta = {
+      tier: resolved.tier as TierSlot,
+      model: bareModel,
+      provider: route.provider,
+      auth_type: route.authType,
+      confidence: 1,
+      reason: `modality:${modality}`,
+      output_modality: modality,
+      response_mode: 'buffered',
+      fallbackRoutes: (resolved.fallback_routes ?? []).map((r) => ({
+        provider: r.provider,
+        model: r.model,
+        authType: r.authType,
+      })),
+    };
+    return { forward, meta, failedFallbacks: [] };
   }
 
   private async resolveRouting(

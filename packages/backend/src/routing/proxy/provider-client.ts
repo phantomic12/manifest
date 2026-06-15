@@ -97,6 +97,80 @@ export class ProviderClient {
     this.codexAffinity = codexAffinity ?? new CodexSessionAffinity();
   }
 
+  /**
+   * Forward a multimodal request (image / audio / video) to the
+   * upstream provider. Unlike `forward()` which rewrites the body
+   * to OpenAI / Anthropic / Google chat-completions shape, this
+   * method passes the body through verbatim because image-gen,
+   * speech, and video-gen endpoints take a fundamentally different
+   * shape (`{ model, prompt, n, size, ... }` for image; no
+   * `messages` array, no `stream` flag).
+   *
+   * The path comes from the endpoint's per-modality `buildXxxPath`
+   * override, or the OpenAI-standard fallback. The model is also
+   * passed through — the caller is responsible for matching it to
+   * a multimodal-capable model.
+   */
+  async forwardMultimodal(opts: {
+    provider: string;
+    apiKey: string;
+    model: string;
+    body: Record<string, unknown>;
+    apiMode: 'image_generations' | 'audio_speech' | 'video_generations';
+    signal?: AbortSignal;
+    extraHeaders?: Record<string, string>;
+    customEndpoint?: ProviderEndpoint;
+    authType?: string;
+  }): Promise<ForwardResult> {
+    const {
+      provider,
+      apiKey,
+      model,
+      body,
+      apiMode,
+      signal,
+      extraHeaders,
+      customEndpoint,
+      authType,
+    } = opts;
+    const { endpoint, endpointKey } = await this.resolveEndpoint(
+      customEndpoint,
+      provider,
+      authType,
+      model,
+      apiMode,
+    );
+    const bareModel = stripModelPrefix(model, endpointKey);
+
+    const path =
+      apiMode === 'image_generations'
+        ? (endpoint.buildImagePath?.(bareModel) ?? '/v1/images/generations')
+        : apiMode === 'audio_speech'
+          ? (endpoint.buildAudioPath?.(bareModel) ?? '/v1/audio/speech')
+          : (endpoint.buildVideoPath?.(bareModel) ?? '/v1/videos/generations');
+    const url = `${endpoint.baseUrl}${path}`;
+    const headers = endpoint.buildHeaders(apiKey, authType);
+    const finalHeaders = extraHeaders ? { ...headers, ...extraHeaders } : headers;
+    const requestBody = { ...body, model: bareModel };
+
+    this.logger.debug(`Forwarding multimodal (${apiMode}) to ${endpointKey}: ${url}`);
+
+    if (endpoint.requiresSsrfRevalidation) {
+      try {
+        await validatePublicUrl(url, { allowPrivate: isSelfHosted() });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Refusing to forward to disallowed URL: ${message}`);
+      }
+    }
+
+    return this.executeFetch(url, finalHeaders, requestBody, signal, /* stream */ false, {
+      isGoogle: false,
+      isAnthropic: false,
+      isChatGpt: false,
+    });
+  }
+
   async forward(opts: ForwardOptions): Promise<ForwardResult> {
     const {
       provider,

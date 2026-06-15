@@ -116,6 +116,30 @@ export class ProxyController {
     await this.handleProxyRequest(req, res, 'messages');
   }
 
+  @Post('images/generations')
+  async imageGenerations(
+    @Req() req: Request & { ingestionContext: IngestionContext },
+    @Res() res: ExpressResponse,
+  ): Promise<void> {
+    await this.handleMultimodalProxyRequest(req, res, 'image_generations', 'image');
+  }
+
+  @Post('audio/speech')
+  async audioSpeech(
+    @Req() req: Request & { ingestionContext: IngestionContext },
+    @Res() res: ExpressResponse,
+  ): Promise<void> {
+    await this.handleMultimodalProxyRequest(req, res, 'audio_speech', 'audio');
+  }
+
+  @Post('videos/generations')
+  async videoGenerations(
+    @Req() req: Request & { ingestionContext: IngestionContext },
+    @Res() res: ExpressResponse,
+  ): Promise<void> {
+    await this.handleMultimodalProxyRequest(req, res, 'video_generations', 'video');
+  }
+
   private async handleProxyRequest(
     req: Request & { ingestionContext: IngestionContext },
     res: ExpressResponse,
@@ -277,6 +301,84 @@ export class ProxyController {
       );
     } finally {
       if (slotAcquired) this.rateLimiter.releaseSlot(userId);
+    }
+  }
+
+  /**
+   * Multimodal proxy handler. Resolves the multimodal assignment
+   * for the agent, calls the upstream image-gen / speech / video
+   * endpoint, and streams the raw response back to the caller.
+   * Unlike the text-mode `handleProxyRequest` this is single-shot —
+   * no fallbacks, no streaming, no body rewrites. Multimodal
+   * responses (image bytes, audio bytes) get returned verbatim.
+   */
+  private async handleMultimodalProxyRequest(
+    req: Request & { ingestionContext: IngestionContext },
+    res: ExpressResponse,
+    apiMode: 'image_generations' | 'audio_speech' | 'video_generations',
+    modality: MultimodalOutputModality,
+  ): Promise<void> {
+    const { userId } = req.ingestionContext;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sessionKey = (req.headers['x-session-key'] as string) || 'default';
+
+    const clientAbort = new AbortController();
+    res.once('close', () => clientAbort.abort());
+    const startTime = Date.now();
+    const traceId = this.extractTraceId(req);
+
+    try {
+      const { forward, meta, failedFallbacks } = await this.proxyService.proxyMultimodalRequest({
+        agentId: req.ingestionContext.agentId,
+        userId,
+        body,
+        sessionKey,
+        tenantId: req.ingestionContext.tenantId,
+        agentName: req.ingestionContext.agentName,
+        signal: clientAbort.signal,
+        headers: req.headers,
+        apiMode,
+        modality,
+      });
+
+      // Live-routing-monitor: record the multimodal decision so the
+      // panel shows it in real time. We don't record friendly
+      // responses (no real routing decision happened).
+      if (meta.provider && meta.provider !== 'manifest') {
+        this.recordRoutingDecision({
+          userId,
+          agentId: req.ingestionContext.agentId,
+          meta,
+          failedFallbacks: failedFallbacks?.length ?? 0,
+        });
+      }
+
+      const providerResponse = forward.response;
+      if (!providerResponse.ok) {
+        const errorBody = await providerResponse.text();
+        res.status(providerResponse.status).json({
+          error: {
+            message: `Multimodal upstream error ${providerResponse.status}: ${errorBody.slice(0, 500)}`,
+            type: 'upstream_error',
+            status: providerResponse.status,
+          },
+        });
+        return;
+      }
+      // Pass-through for multimodal: image bytes / audio bytes go
+      // back as the raw upstream body. The Content-Type from the
+      // upstream decides the response shape (image/png, audio/mpeg,
+      // etc.) — we set status + stream the body without parsing.
+      res.status(providerResponse.status);
+      const contentType = providerResponse.headers.get('content-type');
+      if (contentType) res.setHeader('content-type', contentType);
+      const buffer = await providerResponse.arrayBuffer();
+      res.send(Buffer.from(buffer));
+      this.logger.log(
+        `Multimodal ${apiMode} completed in ${Date.now() - startTime}ms (${traceId ?? 'no-trace'})`,
+      );
+    } catch (err: unknown) {
+      this.handleProxyError(err, req, res, clientAbort, /* headersSent */ false, traceId, null, {});
     }
   }
 
