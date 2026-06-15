@@ -132,6 +132,12 @@ describe('ProxyController streaming abort', () => {
       new ThinkingBlockCache(),
       new ReasoningContentCache(),
       { isRecording: jest.fn().mockResolvedValue(false), invalidate: jest.fn() } as never,
+      {
+        record: jest.fn(),
+        recent: jest.fn(),
+        stream: jest.fn(),
+        onModuleDestroy: jest.fn(),
+      } as never,
     );
   });
 

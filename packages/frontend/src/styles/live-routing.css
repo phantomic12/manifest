@@ -1,0 +1,127 @@
+/* ── Live routing monitor panel ──────────────────────────────────────── */
+
+.live-routing-panel {
+  margin-top: 20px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  overflow: hidden;
+}
+
+.live-routing-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.4);
+}
+
+.live-routing-panel__title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+
+.live-routing-panel__count {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+}
+
+.live-routing-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  font-style: italic;
+}
+
+.live-routing-list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.live-routing-row {
+  display: grid;
+  grid-template-columns: 72px 80px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-routing-row:last-child {
+  border-bottom: none;
+}
+
+.live-routing-row__time {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.live-routing-row__tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: capitalize;
+  color: hsl(var(--muted-foreground));
+}
+
+.live-routing-tier-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.live-routing-row__models {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.live-routing-model {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: hsl(var(--foreground));
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: hsl(var(--muted) / 0.6);
+}
+
+.live-routing-model--success {
+  background: hsl(142 71% 45% / 0.15);
+  color: hsl(142 71% 35%);
+}
+
+.live-routing-no-route {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+}
+
+.live-routing-arrow {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.live-routing-failed-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: hsl(0 84% 60% / 0.12);
+  color: hsl(0 84% 45%);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

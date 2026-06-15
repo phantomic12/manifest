@@ -58,4 +58,40 @@ describe('SseController', () => {
     mockSubject.next({ userId: 'user-1', kind: 'agent' });
     mockSubject.next({ userId: 'user-1', kind: 'routing' });
   });
+
+  it('forwards routing-decision payload as JSON in the data field', (done) => {
+    const user = { id: 'user-1', name: 'Test', email: 'test@test.com' } as never;
+    const stream$ = controller.events(user);
+    const received: unknown[] = [];
+
+    const decision = {
+      requestId: 'req-1',
+      ts: 1_700_000_000_000,
+      agentId: 'agent-1',
+      tier: 'medium',
+      primary: { provider: 'OpenAI', model: 'gpt-4o' },
+      fallbacks: [{ provider: 'Anthropic', model: 'claude-haiku-4' }],
+      modality: 'text',
+      responseMode: 'stream',
+      failedFallbacks: 0,
+      confidence: 0.7,
+      reason: 'medium complexity',
+    };
+
+    stream$.subscribe({
+      next: (event) => {
+        received.push(event);
+        if (received.length === 2) {
+          expect(received[0]).toEqual({
+            type: 'routing-decision',
+            data: JSON.stringify(decision),
+          });
+          expect(received[1]).toEqual({ type: 'ping', data: 'ping' });
+          done();
+        }
+      },
+    });
+
+    mockSubject.next({ userId: 'user-1', kind: 'routing-decision', payload: decision });
+  });
 });

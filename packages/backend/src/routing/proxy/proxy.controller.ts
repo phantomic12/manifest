@@ -10,6 +10,7 @@ import {
   HttpException,
 } from '@nestjs/common';
 import { Request, Response as ExpressResponse } from 'express';
+import { randomUUID } from 'crypto';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Public } from '../../common/decorators/public.decorator';
 import { AgentKeyAuthGuard } from '../../otlp/guards/agent-key-auth.guard';
@@ -39,6 +40,11 @@ import { formatManifestError } from '../../common/errors/error-codes';
 import type { ProxyApiMode } from './proxy-types';
 import { ResponsesSseError } from './chatgpt-adapter';
 import { sanitizeProviderError } from './proxy-error-sanitizer';
+import {
+  RoutingDecisionRecorder,
+  RoutingDecision,
+} from '../../common/services/routing-decision-recorder.service';
+import type { RoutingMeta } from './proxy.service';
 
 const MAX_SEEN_USERS = 10_000;
 const SEEN_USER_TTL_MS = 24 * 60 * 60 * 1000;
@@ -61,6 +67,7 @@ export class ProxyController {
     private readonly thinkingCache: ThinkingBlockCache,
     private readonly reasoningCache: ReasoningContentCache,
     private readonly recordingCache: AgentRecordingCacheService,
+    private readonly decisionRecorder: RoutingDecisionRecorder,
   ) {}
 
   @Get('models')
@@ -145,6 +152,20 @@ export class ProxyController {
         headers: req.headers,
         apiMode,
       });
+
+      // Fan the routing decision out to the live-routing-monitor panel
+      // BEFORE we send the response so SSE subscribers see the decision
+      // in lockstep with the bytes coming back. We skip the synthetic
+      // friendly responses (provider === 'manifest') — there's no real
+      // routing decision there, just an error message.
+      if (meta.provider && meta.provider !== 'manifest') {
+        this.recordRoutingDecision({
+          userId,
+          agentId: req.ingestionContext.agentId,
+          meta,
+          failedFallbacks: failedFallbacks?.length ?? 0,
+        });
+      }
 
       this.trackFirstProxyRequest(userId);
 
@@ -340,6 +361,39 @@ export class ProxyController {
       this.seenUsers.delete(oldest);
     }
     this.seenUsers.set(userId, now);
+  }
+
+  private recordRoutingDecision(args: {
+    userId: string;
+    agentId: string;
+    meta: RoutingMeta;
+    failedFallbacks: number;
+  }): void {
+    const { userId, agentId, meta, failedFallbacks } = args;
+    // `primary` is the model the routing chain wanted first. When a
+    // fallback succeeded, the original primary's identity is preserved
+    // on `fallbackFromModel` / `primaryProvider`; otherwise the primary
+    // IS the model that answered.
+    const primary = meta.fallbackFromModel
+      ? { provider: meta.primaryProvider ?? 'unknown', model: meta.fallbackFromModel }
+      : { provider: meta.provider, model: meta.model, authType: meta.auth_type };
+    const decision: RoutingDecision = {
+      requestId: randomUUID(),
+      ts: Date.now(),
+      agentId,
+      tier: meta.tier,
+      primary,
+      fallbacks: meta.fallbackRoutes ?? [],
+      modality: meta.output_modality ?? 'text',
+      responseMode: meta.response_mode === 'stream' ? 'stream' : 'non_stream',
+      specificityCategory: meta.specificity_category,
+      headerTierId: meta.header_tier_id,
+      successModel: { provider: meta.provider, model: meta.model },
+      failedFallbacks,
+      confidence: meta.confidence,
+      reason: meta.reason,
+    };
+    this.decisionRecorder.record(userId, decision);
   }
 
   private evictExpiredUsers(now: number): void {
